@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual env
+.venv/
+venv/
+ENV/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Artifacts / data
+artifacts/
+data/processed/
+*.parquet
+*.pkl
+*.index
+*.npy
+*.npz
+
+# OS
+.DS_Store
+data/
+notebooks/
+tests/
+logs/
+*.log
