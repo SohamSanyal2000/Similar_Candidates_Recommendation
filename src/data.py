@@ -71,10 +71,10 @@ def validate_schema(data: RawMovieLensData) -> None:
         raise ValueError("links.csv has duplicate movieId values")
 
     # Movie IDs should be consistent (ratings/tags/links should reference movies)
-    movie_ids = set(data.movies["movieId"].astype(int).tolist())
-    bad_ratings = set(data.ratings["movieId"].astype(int).tolist()) - movie_ids
-    bad_tags = set(data.tags["movieId"].astype(int).tolist()) - movie_ids
-    bad_links = set(data.links["movieId"].astype(int).tolist()) - movie_ids
+    movie_ids = set(data.movies["movieId"].astype("int64").tolist())
+    bad_ratings = set(data.ratings["movieId"].astype("int64").tolist()) - movie_ids
+    bad_tags = set(data.tags["movieId"].astype("int64").tolist()) - movie_ids
+    bad_links = set(data.links["movieId"].astype("int64").tolist()) - movie_ids
 
     if bad_ratings:
         raise ValueError(f"ratings.csv has {len(bad_ratings)} movieIds not in movies.csv")
@@ -82,3 +82,26 @@ def validate_schema(data: RawMovieLensData) -> None:
         raise ValueError(f"tags.csv has {len(bad_tags)} movieIds not in movies.csv")
     if bad_links:
         raise ValueError(f"links.csv has {len(bad_links)} movieIds not in movies.csv")
+
+    # Ratings constraints (MovieLens contract)
+    ratings = data.ratings
+    if (ratings["timestamp"] < 0).any():
+        raise ValueError("ratings.csv contains negative timestamps")
+
+    # Allowed values: 0.5, 1.0, ..., 5.0 (half-star increments)
+    # Use integer arithmetic to avoid float representation edge cases.
+    scaled = (ratings["rating"] * 2).round().astype("int64")
+    valid_scaled = set(range(1, 11))  # 0.5..5.0 => 1..10 after *2
+    bad_mask = ~scaled.isin(valid_scaled) | ~ratings["rating"].between(0.5, 5.0)
+    if bad_mask.any():
+        bad_values = sorted(set(ratings.loc[bad_mask, "rating"].tolist()))
+        raise ValueError(f"ratings.csv has invalid rating values (expected half-stars 0.5..5.0): {bad_values}")
+
+    # Ensure unique (userId, movieId) ratings
+    if ratings.duplicated(subset=["userId", "movieId"]).any():
+        raise ValueError("ratings.csv contains duplicate (userId, movieId) rows")
+
+    # Tags timestamps sanity (also Unix seconds)
+    tags = data.tags
+    if (tags["timestamp"] < 0).any():
+        raise ValueError("tags.csv contains negative timestamps")
