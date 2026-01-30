@@ -23,6 +23,13 @@ data/raw/
 
 > **License & attribution:** The dataset is provided by GroupLens Research. Please review `data/raw/README.txt` for usage license terms and citation requirements.  
 
+### Dataset contract (important)
+The raw file formats and column meanings are defined by the MovieLens README (`data/raw/README.txt`). Key assumptions enforced by this repo:
+- `ratings.csv`: 5-star scale in half-star increments; `timestamp` is UNIX seconds
+- `tags.csv`: free-text `tag` values with UNIX seconds timestamps
+- `movies.csv`: `movieId,title,genres` where `genres` are pipe-separated
+- `links.csv`: `imdbId` must be treated as a string (it may contain leading zeros); IDs link to IMDb/TMDB
+
 ## Quickstart
 
 ### 1) Create environment & install deps
@@ -32,14 +39,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2) Run Phase 0 notebook
-Open:
-- `notebooks/00_phase0_project_setup.ipynb`
+### 2) Build offline artifacts (catalog + indexes)
+This is the single offline command that produces all local artifacts used later by the online service:
 
-This notebook:
-- verifies the repo structure
-- loads raw CSVs
-- validates schema and basic constraints
+```bash
+python -m src.pipelines.offline_build --config config.yaml --force
+```
+
+Outputs (must exist after a successful run):
+- `data/processed/movie_catalog.parquet`
+- `artifacts/dense/dense_faiss.index`
+- `artifacts/bm25/bm25_index.pkl`
+- `artifacts/offline_manifest.json`
 
 ### 3) Run the API (Phase 0 skeleton)
 ```bash
