@@ -1,42 +1,21 @@
-# Default configuration for the MovieLens two-stage (Retrieval + Ranking) similarity service.
-
 dataset:
   raw_dir: "data/raw"
   processed_dir: "data/processed"
 
 text_profile:
-  # How many tags per movie to include in the profile text (top-N by frequency).
-  top_n_tags: 20
-  # If True, include year in the text profile when available.
   include_year: true
+  top_n_tags: 20
+  stop_tags:
+    - "in netflix queue"
+
+ratings:
+  bayes_m: 50
 
 retrieval:
   dense:
-    # Bi-encoder model used to embed movie profiles and user queries.
     bi_encoder_model: "sentence-transformers/all-MiniLM-L6-v2"
-    top_k: 200
-    # FAISS index type; for ~10k items, IndexFlatIP is simple and strong.
     faiss_index: "IndexFlatIP"
     normalize_embeddings: true
 
   bm25:
-    top_k: 200
-    # Tokenization strategy for BM25; "simple" means lowercase + basic punctuation cleanup.
     tokenizer: "simple"
-
-  hybrid:
-    # Candidate pool size after fusion; reranker will score these.
-    fused_top_k: 300
-    # Reciprocal Rank Fusion constant (higher => less sensitive to rank differences).
-    rrf_k: 60
-
-ranking:
-  # Cross-encoder model used to rerank retrieved candidates.
-  cross_encoder_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
-  rerank_top_k: 300
-  output_top_k: 10
-
-serving:
-  host: "0.0.0.0"
-  port: 8000
-  log_level: "info"
