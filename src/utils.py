@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import logging
 import os
 import random
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -12,6 +12,21 @@ import numpy as np
 class ReproducibilityConfig:
     seed: int = 42
     deterministic: bool = True
+
+
+def setup_logging(level: int | str = "INFO") -> None:
+    """Configure stdlib logging with a consistent, project-wide format."""
+    root_logger = logging.getLogger()
+    if root_logger.handlers:
+        # Avoid duplicate handlers if called multiple times (e.g., notebooks + CLI).
+        root_logger.setLevel(level)
+        return
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
 def set_global_seed(cfg: ReproducibilityConfig) -> None:
