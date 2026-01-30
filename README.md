@@ -52,13 +52,29 @@ Outputs (must exist after a successful run):
 - `artifacts/bm25/bm25_index.pkl`
 - `artifacts/offline_manifest.json`
 
-### 3) Run the API (Phase 0 skeleton)
+### 3) Run the API (online service)
 ```bash
 uvicorn src.service.app:app --reload --port 8000
 ```
 
 Then:
-- `GET /health` → should return `{"status":"ok"}`
+- `GET /health` → `{"status":"ok"}`
+
+Example (hybrid retrieval + cross-encoder rerank):
+```bash
+curl -X POST http://localhost:8000/recommend -H "Content-Type: application/json" \
+  -d '{"query":"Toy Story","k":10,"mode":"hybrid","resolve_title":true}'
+```
+
+Example (movieId query):
+```bash
+curl "http://localhost:8000/recommend/movie/1?k=10&mode=hybrid"
+```
+
+Optional (title search helper):
+```bash
+curl "http://localhost:8000/movies/search?q=toy%20story&limit=10"
+```
 
 ## Project structure
 

@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class BM25RetrievalResult:
@@ -89,7 +91,41 @@ def build_and_save_bm25_index(
 
 
 class BM25Retriever:
-    """Online BM25 retriever (not implemented in this prompt)."""
+    """Online BM25 retriever wrapper around an offline-built BM25Index."""
 
-    def __init__(self) -> None:
-        raise NotImplementedError("Online BM25Retriever is not part of the offline build task.")
+    def __init__(self, index: BM25Index) -> None:
+        self.index = index
+
+    @classmethod
+    def from_artifact(cls, path: Path) -> "BM25Retriever":
+        """Load a BM25Index saved by the offline build."""
+        return cls(BM25Index.load(Path(path)))
+
+    def search(self, query_text: str, *, top_k: int) -> BM25RetrievalResult:
+        """Retrieve the top-k documents for a query string."""
+        if top_k <= 0:
+            raise ValueError("top_k must be > 0")
+
+        query_text = "" if query_text is None else str(query_text)
+        if query_text.strip() == "":
+            raise ValueError("query_text must be non-empty")
+
+        if self.index.tokenizer != "simple":
+            raise ValueError(f"Unsupported tokenizer: {self.index.tokenizer!r}")
+
+        query_tokens = simple_tokenize(query_text)
+        scores = np.asarray(self.index.bm25.get_scores(query_tokens), dtype=np.float32)
+        if scores.ndim != 1 or len(scores) != len(self.index.movie_ids):
+            raise RuntimeError("BM25 get_scores returned unexpected shape")
+
+        k = int(min(int(top_k), len(scores)))
+        if k == 0:
+            return BM25RetrievalResult(movie_ids=[], scores=[])
+
+        # Efficient top-k: argpartition then sort those k indices.
+        top_idx = np.argpartition(-scores, kth=k - 1)[:k]
+        top_idx = top_idx[np.argsort(-scores[top_idx], kind="mergesort")]
+
+        movie_ids = [int(self.index.movie_ids[int(i)]) for i in top_idx.tolist()]
+        out_scores = [float(scores[int(i)]) for i in top_idx.tolist()]
+        return BM25RetrievalResult(movie_ids=movie_ids, scores=out_scores)

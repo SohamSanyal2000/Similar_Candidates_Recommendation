@@ -19,3 +19,18 @@ retrieval:
 
   bm25:
     tokenizer: "simple"
+
+ranking:
+  cross_encoder_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  rerank_top_k: 200
+
+online:
+  default_mode: "hybrid"         # "dense" or "hybrid"
+  dense_top_k: 200
+  bm25_top_k: 200
+  fused_top_k: 300               # candidate set size before rerank
+  output_top_k: 10
+  rrf_k: 60
+  title_resolution:
+    enabled_by_default: true
+    min_similarity: 0.85         # for fuzzy title matching
