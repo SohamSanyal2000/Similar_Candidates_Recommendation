@@ -28,6 +28,5 @@ data/processed/
 .DS_Store
 data/
 notebooks/
-tests/
 logs/
 *.log
