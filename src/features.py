@@ -112,7 +112,7 @@ def aggregate_tags(
         .reset_index()
         .rename(columns={"index": "movieId"})
     )
-    out["tags_top_text"] = out["tags_top"].apply(lambda xs: " | ".join(xs) if isinstance(xs, list) else "")
+    out["tags_top_text"] = out["tags_top"].apply(lambda xs: ", ".join(xs) if isinstance(xs, list) else "")
     return out[  # stable column order
         [
             "movieId",
@@ -158,14 +158,25 @@ def build_movie_profile(
     include_year: bool = True,
 ) -> str:
     """Build canonical movie profile text used for retrieval."""
-    lines: list[str] = [f"Title: {title_clean}"]
+    title_clean = "" if title_clean is None else str(title_clean)
+    title_clean = title_clean.replace("\n", " ").strip()
+
+    parts: list[str] = [f"Title: {title_clean}"]
+
     if include_year and year is not None:
-        lines.append(f"Year: {int(year)}")
-    genres_text = ", ".join(genres_list)
-    lines.append(f"Genres: {genres_text}")
+        parts.append(f"Year: {int(year)}")
+
+    genres_text = ", ".join([str(g).strip() for g in genres_list if str(g).strip()])
+    if genres_text:
+        parts.append(f"Genres: {genres_text}")
+
     if tags_top:
-        lines.append(f"Tags: {' | '.join(tags_top)}")
-    return "\n".join(lines)
+        tags_clean = [str(t).replace("|", " ").replace("\n", " ").strip() for t in tags_top]
+        tags_clean = [t for t in tags_clean if t]
+        if tags_clean:
+            parts.append(f"Tags: {', '.join(tags_clean)}")
+
+    return ". ".join(parts)
 
 
 def build_movie_catalog(

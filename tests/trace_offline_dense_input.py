@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -198,7 +199,7 @@ def _trace_aggregate_tags(
         .reset_index()
         .rename(columns={"index": "movieId"})
     )
-    out["tags_top_text"] = out["tags_top"].apply(lambda xs: " | ".join(xs) if isinstance(xs, list) else "")
+    out["tags_top_text"] = out["tags_top"].apply(lambda xs: ", ".join(xs) if isinstance(xs, list) else "")
     out = out[
         [
             "movieId",
@@ -232,6 +233,8 @@ def trace_offline_dense_input(
     sample_rows: int,
     dense_batch_size: int,
     device: str | None,
+    compute_embeddings: bool,
+    embed_limit: int,
 ) -> None:
     pd.set_option("display.max_colwidth", 200)
     pd.set_option("display.width", 200)
@@ -449,7 +452,7 @@ def trace_offline_dense_input(
         preview = batch[0].replace("\n", "\\n") if batch else ""
         print(f"batch[{i}]: size={len(batch)} first_text_preview={preview[:120]}")
 
-    _banner("3.3) The exact call (this script stops BEFORE running it)")
+    _banner("3.3) The exact call (use --compute-embeddings to actually run it on a small sample)")
     print(
         "SentenceTransformer(model_name, device=device).encode(\n"
         "  texts,\n"
@@ -458,20 +461,91 @@ def trace_offline_dense_input(
         "  show_progress_bar=False,\n"
         ")"
     )
-    print("\nDone. (No embeddings were computed.)")
+
+    if not compute_embeddings:
+        print("\nDone. (No embeddings were computed.)")
+        return
+
+    _banner("4) Compute dense embeddings (sample) using SentenceTransformer.encode")
+    try:
+        from src.retrieval.dense import embed_texts, load_bi_encoder
+    except Exception as exc:  # pragma: no cover
+        raise ImportError("Could not import dense embedding helpers from src.retrieval.dense") from exc
+
+    if embed_limit <= 0:
+        raise ValueError(f"embed_limit must be > 0 when --compute-embeddings is set, got {embed_limit}")
+
+    texts_sample = texts[:embed_limit]
+    movie_ids_sample = movie_ids[:embed_limit]
+    _print_kv(
+        [
+            ("embed_limit", embed_limit),
+            ("texts_sample_len", len(texts_sample)),
+            ("movie_ids_sample_len", len(movie_ids_sample)),
+        ]
+    )
+
+    model_name = str(config["retrieval"]["dense"]["bi_encoder_model"])
+    try:
+        model = load_bi_encoder(model_name, device=device)
+    except ImportError as exc:
+        print(f"Could not load SentenceTransformer model ({model_name!r}): {exc}")
+        print("Hint: install deps with `pip install -r requirements.txt`.")
+        return
+
+    embeddings = embed_texts(
+        model,
+        texts_sample,
+        batch_size=int(dense_batch_size),
+        normalize_embeddings=bool(config["retrieval"]["dense"]["normalize_embeddings"]),
+    )
+    if int(embeddings.shape[0]) != len(texts_sample):
+        raise RuntimeError(f"Expected 1 embedding per text; got shape={embeddings.shape} len(texts)={len(texts_sample)}")
+
+    _print_kv(
+        [
+            ("embeddings_shape", tuple(int(x) for x in embeddings.shape)),
+            ("embeddings_dtype", str(embeddings.dtype)),
+            ("embeddings_finite", bool(np.isfinite(embeddings).all())),
+        ]
+    )
+    norms = np.linalg.norm(embeddings, axis=1)
+    _print_kv(
+        [
+            ("norm_min", float(norms.min()) if len(norms) else None),
+            ("norm_max", float(norms.max()) if len(norms) else None),
+            ("norm_mean", float(norms.mean()) if len(norms) else None),
+        ]
+    )
+
+    _banner("4.1) Sample embedding preview (first row, first 12 dims)")
+    if embeddings.size:
+        print(f"movieId={int(movie_ids_sample[0])} emb[:12]={np.asarray(embeddings[0, :12]).round(4).tolist()}")
+    print("\nDone. (Embeddings were computed for the sample.)")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
             "Trace the offline dense embedding build data flow, printing each transformation step, "
-            "up to (but not including) the SentenceTransformer.encode() call."
+            "up to the SentenceTransformer.encode() call."
         )
     )
     p.add_argument("--config", type=Path, default=Path("config.yaml"), help="Path to config YAML.")
     p.add_argument("--sample-rows", type=int, default=5, help="How many sample rows to print per step.")
     p.add_argument("--dense-batch-size", type=int, default=64, help="Batch size that would be used for encode().")
     p.add_argument("--device", type=str, default=None, help="Device that would be used for SentenceTransformer.")
+    p.add_argument(
+        "--compute-embeddings",
+        action="store_true",
+        help="Actually run SentenceTransformer.encode() on a small sample (may download the model).",
+    )
+    p.add_argument(
+        "--embed-limit",
+        type=int,
+        default=5,
+        help="How many movies to embed when --compute-embeddings is set.",
+    )
     return p
 
 
@@ -482,6 +556,8 @@ def main(argv: list[str] | None = None) -> None:
         sample_rows=int(args.sample_rows),
         dense_batch_size=int(args.dense_batch_size),
         device=args.device,
+        compute_embeddings=bool(args.compute_embeddings),
+        embed_limit=int(args.embed_limit),
     )
 
 
