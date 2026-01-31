@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import logging
 import shutil
@@ -22,17 +21,9 @@ from ..utils import ReproducibilityConfig, set_global_seed, setup_logging
 
 logger = logging.getLogger(__name__)
 
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def dataset_fingerprint(raw_dir: Path) -> dict[str, Any]:
-    """Compute a deterministic sha256 fingerprint over the raw CSV files."""
+    """Lightweight dataset summary for the offline manifest.
+    """
     raw_dir = raw_dir.resolve()
     csv_names = ["movies.csv", "ratings.csv", "tags.csv", "links.csv"]
     paths = [raw_dir / name for name in csv_names]
@@ -40,19 +31,16 @@ def dataset_fingerprint(raw_dir: Path) -> dict[str, Any]:
     if missing:
         raise FileNotFoundError(f"Missing raw dataset files in {raw_dir}: {missing}")
 
-    per_file = {p.name: _sha256_file(p) for p in paths}
-
-    combined = hashlib.sha256()
-    for name in csv_names:
-        combined.update(name.encode("utf-8"))
-        combined.update(b"\0")
-        with (raw_dir / name).open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                combined.update(chunk)
+    files: dict[str, Any] = {}
+    total_bytes = 0
+    for p in paths:
+        size = int(p.stat().st_size)
+        total_bytes += size
+        files[p.name] = {"bytes": size}
 
     return {
-        "fingerprint_sha256": combined.hexdigest(),
-        "files_sha256": per_file,
+        "files": files,
+        "total_bytes": total_bytes,
     }
 
 
@@ -231,4 +219,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-
