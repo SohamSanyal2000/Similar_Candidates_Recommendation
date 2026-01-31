@@ -497,17 +497,10 @@ class TwoStageMovieRecommender:
         *,
         query: str,
         k: int | None = None,
-        mode: Mode | None = None,
-        resolve_title: bool | None = None,
-        debug: bool = False,
     ) -> dict[str, Any]:
-        """Run two-stage recommendation for a query."""
-        if resolve_title is None:
-            resolve_title = bool(self.title_resolution_enabled_by_default)
-        if mode is None:
-            mode = self.default_mode
-        if mode not in ("dense", "hybrid"):
-            raise ValueError(f"mode must be 'dense' or 'hybrid', got {mode!r}")
+        """Run two-stage recommendation for a query with minimal knobs (query, k)."""
+        resolve_title: bool = bool(self.title_resolution_enabled_by_default)
+        mode: Mode = self.default_mode
 
         k_out = int(k if k is not None else self.output_top_k_default)
         k_out = max(1, min(50, k_out))
@@ -564,13 +557,7 @@ class TwoStageMovieRecommender:
         results: list[dict[str, Any]] = []
         for cand in reranked[:k_out]:
             fields = self.catalog.get_display_fields(int(cand.movieId))
-            item: dict[str, Any] = {
-                **fields,
-                "rerank_score": float(cand.rerank_score if cand.rerank_score is not None else 0.0),
-                "dense_score": (float(cand.dense_score) if cand.dense_score is not None else None),
-                "bm25_score": (float(cand.bm25_score) if cand.bm25_score is not None else None),
-                "fused_score": (float(cand.fused_score) if cand.fused_score is not None else None),
-            }
+            item: dict[str, Any] = {**fields}
 
             if query_type == "movieId" and resolved_mid_int is not None:
                 row = self.catalog.get_row(int(cand.movieId))
@@ -601,7 +588,7 @@ class TwoStageMovieRecommender:
             {k: round(v, 4) for k, v in timings.items()},
         )
 
-        resp: dict[str, Any] = {
+        return {
             "query": str(resolved.get("display_query", query)),
             "query_type": query_type,
             "resolved_movieId": resolved_mid_int,
@@ -609,20 +596,6 @@ class TwoStageMovieRecommender:
             "k": k_out,
             "results": results,
         }
-
-        if debug:
-            debug_info: dict[str, Any] = {
-                "timings_s": timings,
-                "counts": {
-                    "candidates": len(candidates),
-                    "reranked": len(reranked),
-                },
-            }
-            if "title_resolution" in resolved:
-                debug_info["title_resolution"] = resolved["title_resolution"]
-            resp["debug_info"] = debug_info
-
-        return resp
 
     def search_titles(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         """Search titles in the catalog (UI helper endpoint)."""

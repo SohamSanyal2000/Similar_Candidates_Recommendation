@@ -161,7 +161,6 @@ class MovieCatalog:
             movie_ids = self.norm_title_to_movie_ids.get(title_norm, [])
             for mid in movie_ids:
                 item = self.get_display_fields(int(mid))
-                item["score"] = float(score)
                 out.append(item)
                 if len(out) >= int(limit):
                     return out
@@ -203,4 +202,3 @@ class MovieCatalog:
             return None, float(best_score)
 
         return int(sorted(movie_ids)[0]), float(best_score)
-
