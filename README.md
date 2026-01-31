@@ -1,16 +1,55 @@
-# MovieLens Two-Stage Similar Movies Recommender (Retrieval + Ranking)
+# MovieLens Two‑Stage Similar Movies Recommender (Retrieval + Reranking)
 
-This project builds a **two-stage recommendation pipeline** to identify movies similar to:
-1) a **free-text user query**, or  
-2) a specific **movieId**.
+Build a **two-stage recommendation pipeline** that returns movies similar to:
+1) a **free-text query** (e.g. a title or keywords), or
+2) a specific **MovieLens `movieId`**.
 
-We implement two retrieval strategies:
-- **Approach 2**: Dense semantic retrieval (Sentence-Transformers bi-encoder) → Cross-encoder reranker
-- **Approach 3**: Hybrid retrieval (BM25 + Dense) → RRF fusion → Cross-encoder reranker
+The system fuses **structured metadata** (MovieLens `movies.csv`) and **unstructured user tags** (`tags.csv`) into a single `movie_profile` text used by retrieval and reranking.
 
-## Dataset
+---
 
-We use MovieLens `ml-latest-small` (movies, ratings, tags, links). The raw dataset files are placed under:
+## What this project does (high level)
+
+**Offline (build artifacts)**
+1. Load + validate MovieLens CSVs.
+2. Create a `movie_profile` per movie (title + genres + tags + other engineered fields).
+3. Build retrieval artifacts:
+   - **Dense** semantic index: Sentence-Transformers bi-encoder embeddings + **FAISS**
+   - **BM25** lexical index
+4. Write `artifacts/offline_manifest.json` pointing to all generated outputs.
+
+**Online (FastAPI service)**
+1. Given a query, generate candidates using the default retrieval mode from `config.yaml`.
+2. Fuse candidates (if hybrid) and **rerank using a cross-encoder**.
+3. Return top-`k` recommendations.
+
+> Important behavior: if your query resolves to a specific movie (by `movieId` or title match), that movie is **excluded** from the recommendations list.
+
+---
+
+## Prerequisites
+
+- Python 3.10+ (recommended)
+- macOS/Linux/Windows (tested locally on macOS)
+- Enough RAM for building embeddings and loading models (first run downloads HF models)
+
+---
+
+## Step-by-step: run locally
+
+### 1) Create a virtual environment
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 2) Download the dataset (MovieLens `ml-latest-small`)
+
+1. Download `ml-latest-small.zip` from GroupLens:
+   - https://grouplens.org/datasets/movielens/
+2. Unzip it.
+3. Copy the CSVs into `data/raw/` so you have:
 
 ```
 data/raw/
@@ -21,92 +60,132 @@ data/raw/
   README.txt
 ```
 
-> **License & attribution:** The dataset is provided by GroupLens Research. Please review `data/raw/README.txt` for usage license terms and citation requirements.  
-
-### Dataset contract (important)
+#### Dataset contract (important)
 The raw file formats and column meanings are defined by the MovieLens README (`data/raw/README.txt`). Key assumptions enforced by this repo:
 - `ratings.csv`: 5-star scale in half-star increments; `timestamp` is UNIX seconds
 - `tags.csv`: free-text `tag` values with UNIX seconds timestamps
 - `movies.csv`: `movieId,title,genres` where `genres` are pipe-separated
 - `links.csv`: `imdbId` must be treated as a string (it may contain leading zeros); IDs link to IMDb/TMDB
 
-## Quickstart
+> **License & attribution:** The dataset is provided by GroupLens Research. Please review `data/raw/README.txt` for usage license terms and citation requirements.
 
-### 1) Create environment & install deps
+### 3) Start the API service
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uvicorn src.service.app:app --reload --port 8000
 ```
 
-### 2) Build offline artifacts (catalog + indexes)
-This is the single offline command that produces all local artifacts used later by the online service:
+On startup, the service checks for `artifacts/offline_manifest.json`:
+- If it **exists**, startup is faster (it loads artifacts/models).
+- If it **does not exist**, the service **automatically runs the offline build once** to generate all artifacts, then starts.
 
+> The first startup can take a while because it may (1) build FAISS/BM25 artifacts and (2) download transformer models.
+
+---
+
+## Using the API
+
+The core API is a single endpoint:
+
+### `POST /recommend`
+
+**Request JSON**
+- `query` (string, required): free text (title/keywords) *or* a MovieLens `movieId` as a string
+- `k` (int, optional, default=10): number of recommendations to return (1..50)
+
+#### Example: free-text/title query
+```bash
+curl -X POST http://localhost:8000/recommend \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Toy Story","k":10}'
+```
+
+#### Example: `movieId` query
+```bash
+curl -X POST http://localhost:8000/recommend \
+  -H "Content-Type: application/json" \
+  -d '{"query":"1","k":10}'
+```
+
+### `GET /movies/search` (helper)
+Optional helper endpoint useful for quickly finding candidate titles/movieIds.
+```bash
+curl "http://localhost:8000/movies/search?q=toy%20story&limit=10"
+```
+
+---
+
+## (Optional) Run the offline build manually
+
+If you want to pre-build artifacts (recommended for faster API startup), run:
 ```bash
 python -m src.pipelines.offline_build --config config.yaml --force
 ```
 
-Outputs (must exist after a successful run):
+Expected outputs after a successful build:
 - `data/processed/movie_catalog.parquet`
 - `artifacts/dense/dense_faiss.index`
 - `artifacts/bm25/bm25_index.pkl`
 - `artifacts/offline_manifest.json`
 
-### 3) Run the API (online service)
+---
+
+## Running tests
+
 ```bash
-uvicorn src.service.app:app --reload --port 8000
+./run_tests.sh
 ```
 
-Then:
-- `GET /health` → `{"status":"ok"}`
-
-Example (hybrid retrieval + cross-encoder rerank):
+Or directly:
 ```bash
-curl -X POST http://localhost:8000/recommend -H "Content-Type: application/json" \
-  -d '{"query":"Toy Story","k":10,"mode":"hybrid","resolve_title":true}'
+pytest -q
 ```
 
-Example (movieId query):
+---
+
+## Configuration
+
+Main configuration lives in `config.yaml`.
+
+Environment variables supported by the API service:
+- `CONFIG_PATH` (default: `config.yaml`)
+- `OFFLINE_MANIFEST_PATH` (default: `artifacts/offline_manifest.json`)
+- `LOG_LEVEL` (default: `INFO`)
+
+---
+
+## Troubleshooting
+
+### Startup fails with “Missing raw dataset files …”
+Ensure the four CSVs exist under `data/raw/`:
+`movies.csv`, `ratings.csv`, `tags.csv`, `links.csv`.
+
+### Startup is slow the first time
+This is expected: it may build artifacts and download transformer models.
+After the first successful run, keep `artifacts/offline_manifest.json` to avoid rebuilding.
+
+### Port already in use
+Run on a different port:
 ```bash
-curl "http://localhost:8000/recommend/movie/1?k=10&mode=hybrid"
+uvicorn src.service.app:app --reload --port 8001
 ```
 
-Optional (title search helper):
-```bash
-curl "http://localhost:8000/movies/search?q=toy%20story&limit=10"
-```
+---
 
 ## Project structure
 
 ```
-mle_movielens_two_stage/
-  artifacts/                 # saved indexes, embeddings, mappings (generated)
-  data/
-    raw/                     # raw MovieLens CSVs
-    processed/               # processed features (generated)
-  notebooks/                 # step-by-step notebooks per phase
-  src/                       # reusable modules (retrieval, ranking, fusion, service)
-  tests/                     # lightweight unit tests
-  config.yaml                # hyperparameters and defaults
-  requirements.txt
+artifacts/                   # generated indexes + offline manifest
+data/
+  raw/                       # MovieLens CSVs (you provide)
+  processed/                 # generated catalog/features
+notebooks/                   # EDA + explanations
+src/
+  pipelines/                 # offline build pipeline
+  retrieval/                 # dense (FAISS) + BM25 retrievers
+  fusion/                    # RRF fusion
+  ranking/                   # cross-encoder reranking
+  service/                   # FastAPI app + recommender + schemas
+tests/                       # unit / smoke tests
+config.yaml
+requirements.txt
 ```
-
-## Roadmap (phases)
-
-- **Phase 0:** scaffold + reproducibility + schema validation
-- **Phase 1:** EDA + deeper data validation
-- **Phase 2:** feature engineering → build `movie_profile` text
-- **Phase 3:** retrieval
-  - dense bi-encoder embeddings + FAISS
-  - BM25 lexical retrieval
-  - hybrid fusion with RRF
-- **Phase 4:** cross-encoder reranking
-- **Phase 5:** offline evaluation (Recall@K, nDCG@K, etc.)
-- **Phase 6:** packaging artifacts and basic model card
-- **Phase 7:** serving (FastAPI) with `/recommend/text` and `/recommend/movie/{movieId}`
-- **Phase 8:** monitoring + tests + regression checks
-
-## Notes
-
-- Tags are sparse in `ml-latest-small`. We still fuse them into the movie profile text because they are high-signal when present.
-- All modeling choices and tradeoffs are documented in the notebooks.
