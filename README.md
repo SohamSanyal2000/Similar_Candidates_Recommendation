@@ -114,6 +114,45 @@ curl "http://localhost:8000/movies/search?q=toy%20story&limit=10"
 
 ---
 
+## Assignment: Similar rating patterns (User-User Collaborative Filtering)
+
+This repo also includes a **ratings-based** recommender that:
+
+- finds **users with similar rating patterns** using `data/raw/ratings.csv`
+- recommends movies liked by similar users to a target user
+
+### Build CF artifacts (optional)
+
+Artifacts are stored in `artifacts/user_cf/`. The API will **train them automatically** at startup if missing, but you can prebuild:
+
+```bash
+python -m src.pipelines.user_cf_build --config config.yaml --device cpu
+```
+
+### API endpoints
+
+#### `POST /user_cf/similar_users`
+```bash
+curl -X POST http://localhost:8000/user_cf/similar_users \
+  -H "Content-Type: application/json" \
+  -d '{"userId":1,"top_n":10,"min_common_rated":2}'
+```
+
+#### `POST /user_cf/recommend`
+```bash
+curl -X POST http://localhost:8000/user_cf/recommend \
+  -H "Content-Type: application/json" \
+  -d '{"userId":1,"k":10,"top_n_sim_users":25,"min_common_rated":2,"min_rating_liked":4.0}'
+```
+
+### CLI usage
+
+```bash
+python -m src.user_cf.cli --user-id 1 --top-similar 10 --k 10
+```
+
+---
+
 ## (Optional) Run the offline build manually
 
 If you want to pre-build artifacts (recommended for faster API startup), run:
