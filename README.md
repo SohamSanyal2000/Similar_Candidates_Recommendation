@@ -220,6 +220,7 @@ data/
 notebooks/                   # EDA + explanations
 src/
   pipelines/                 # offline build pipeline
+  user_cf/                   # (Assignment) user-user CF using ratings.csv
   retrieval/                 # dense (FAISS) + BM25 retrievers
   fusion/                    # RRF fusion
   ranking/                   # cross-encoder reranking
@@ -228,3 +229,11 @@ tests/                       # unit / smoke tests
 config.yaml
 requirements.txt
 ```
+
+### New CF files (quick map)
+
+- `src/user_cf/model.py` — matrix factorization model (user/movie embeddings)
+- `src/user_cf/train.py` — training loop + writes artifacts to `artifacts/user_cf/`
+- `src/user_cf/recommender.py` — similar users + movie recommendations
+- `src/user_cf/cli.py` — CLI to display outputs
+- `src/pipelines/user_cf_build.py` — optional prebuild command
