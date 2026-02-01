@@ -16,6 +16,7 @@ import yaml
 
 from ..fusion.rrf import reciprocal_rank_fusion
 from ..paths import get_repo_root
+from ..ranking.cross_encoder import CrossEncoderReranker
 from ..retrieval.bm25 import BM25Retriever
 from ..retrieval.dense import DenseRetriever, embed_texts, load_bi_encoder
 from ..store.catalog import MovieCatalog
@@ -195,7 +196,6 @@ class TwoStageMovieRecommender:
 
         # ----- Models (can be injected for tests) -----
         self._embed_lock = Lock()
-        self._rerank_lock = Lock()
 
         if bi_encoder is None:
             t0 = time.perf_counter()
@@ -206,9 +206,10 @@ class TwoStageMovieRecommender:
             self.bi_encoder = bi_encoder
 
         if cross_encoder is None:
-            self.cross_encoder = self._load_cross_encoder(self.cross_encoder_model_name)
+            self.reranker = CrossEncoderReranker(model_name=self.cross_encoder_model_name)
         else:
-            self.cross_encoder = cross_encoder
+            # Allow injecting a model-like object in tests.
+            self.reranker = CrossEncoderReranker(model_name=self.cross_encoder_model_name, model=cross_encoder)
 
         # Per-instance LRU caches.
         self._embed_cached = self._make_embedding_cache(maxsize=2048)
@@ -220,22 +221,6 @@ class TwoStageMovieRecommender:
             t_dense,
             t_bm25,
         )
-
-    def _load_cross_encoder(self, model_name: str) -> Any:
-        """Load sentence-transformers CrossEncoder."""
-        try:
-            from sentence_transformers import CrossEncoder  # type: ignore[import-not-found]
-        except Exception as exc:  # pragma: no cover
-            raise ImportError("`sentence-transformers` is required for cross-encoder reranking.") from exc
-
-        t0 = time.perf_counter()
-        model = CrossEncoder(model_name)
-        try:
-            model.model.eval()  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        logger.info("Loaded cross-encoder model=%s (%.2fs)", model_name, time.perf_counter() - t0)
-        return model
 
     def _make_embedding_cache(self, *, maxsize: int) -> Any:
         """Create an LRU cache function for query embeddings (keyed by query_text)."""
@@ -409,26 +394,6 @@ class TwoStageMovieRecommender:
 
         return out
 
-    def _cross_encoder_scores(self, pairs: list[tuple[str, str]], *, batch_size: int = 32) -> list[float]:
-        """Score (query, candidate) pairs with the cross-encoder model."""
-        if not pairs:
-            return []
-
-        with self._rerank_lock:
-            # sentence-transformers CrossEncoder API
-            if hasattr(self.cross_encoder, "predict"):
-                scores = self.cross_encoder.predict(pairs, batch_size=int(batch_size), show_progress_bar=False)
-                return [float(x) for x in list(scores)]
-
-            # Fallback for injected test doubles
-            if hasattr(self.cross_encoder, "rerank"):
-                query = pairs[0][0]
-                candidate_texts = [p[1] for p in pairs]
-                scores = self.cross_encoder.rerank(query, candidate_texts)
-                return [float(x) for x in list(scores)]
-
-        raise TypeError("cross_encoder must provide .predict(pairs) or .rerank(query, candidate_texts)")
-
     def rerank(
         self,
         *,
@@ -455,12 +420,9 @@ class TwoStageMovieRecommender:
         k = int(min(int(rerank_top_k), len(candidates_sorted)))
         to_score = candidates_sorted[:k]
 
-        pairs = [(str(query_text), self.catalog.get_movie_profile(int(c.movieId))) for c in to_score]
-        scores = self._cross_encoder_scores(pairs, batch_size=int(batch_size))
-        if len(scores) != len(to_score):
-            raise RuntimeError("Cross-encoder returned mismatched number of scores")
-
-        for cand, score in zip(to_score, scores):
+        candidate_texts = [self.catalog.get_movie_profile(int(c.movieId)) for c in to_score]
+        scores = self.reranker.rerank(str(query_text), candidate_texts, batch_size=int(batch_size))
+        for cand, score in zip(to_score, list(scores)):
             cand.rerank_score = float(score)
 
         # Final sort: rerank_score desc, then weighted_rating/rating_count if present.
@@ -497,10 +459,31 @@ class TwoStageMovieRecommender:
         *,
         query: str,
         k: int | None = None,
+        mode: Mode | None = None,
+        resolve_title: bool | None = None,
+        debug: bool = False,
     ) -> dict[str, Any]:
-        """Run two-stage recommendation for a query with minimal knobs (query, k)."""
-        resolve_title: bool = bool(self.title_resolution_enabled_by_default)
-        mode: Mode = self.default_mode
+        """Run two-stage recommendation.
+
+        Parameters
+        ----------
+        query:
+            Movie title / keywords, or a movieId-like string.
+        k:
+            Number of results to return.
+        mode:
+            Override retrieval mode ("dense" or "hybrid").
+        resolve_title:
+            If True, attempt to resolve a title to a movieId and use that movie's
+            profile as the query. If None, falls back to config default.
+        debug:
+            If True, include `debug_info` in the response.
+        """
+
+        resolve_title_final: bool = (
+            bool(resolve_title) if resolve_title is not None else bool(self.title_resolution_enabled_by_default)
+        )
+        mode_final: Mode = (mode if mode is not None else self.default_mode)
 
         k_out = int(k if k is not None else self.output_top_k_default)
         k_out = max(1, min(50, k_out))
@@ -509,7 +492,7 @@ class TwoStageMovieRecommender:
         timings: dict[str, float] = {}
 
         t0 = time.perf_counter()
-        resolved = self.resolve_query(query, resolve_title=bool(resolve_title))
+        resolved = self.resolve_query(query, resolve_title=bool(resolve_title_final))
         timings["resolve_s"] = time.perf_counter() - t0
         query_text = str(resolved["query_text"])
         query_type = str(resolved["query_type"])
@@ -531,7 +514,7 @@ class TwoStageMovieRecommender:
             query_text=query_text,
             query_type=query_type,
             resolved_movieId=resolved_mid_int,
-            mode=mode,
+            mode=mode_final,
             dense_top_k=dense_top_k,
             bm25_top_k=bm25_top_k,
             fused_top_k=fused_top_k,
@@ -579,7 +562,7 @@ class TwoStageMovieRecommender:
             "recommend query_type=%s resolved_movieId=%s mode=%s k=%d | dense_top_k=%d bm25_top_k=%d fused_top_k=%d rerank_top_k=%d | timings_s=%s",
             query_type,
             resolved_mid_int,
-            mode,
+            mode_final,
             k_out,
             dense_top_k,
             bm25_top_k,
@@ -588,14 +571,27 @@ class TwoStageMovieRecommender:
             {k: round(v, 4) for k, v in timings.items()},
         )
 
-        return {
+        out: dict[str, Any] = {
             "query": str(resolved.get("display_query", query)),
             "query_type": query_type,
             "resolved_movieId": resolved_mid_int,
-            "mode": str(mode),
+            "mode": str(mode_final),
             "k": k_out,
             "results": results,
         }
+
+        if debug:
+            out["debug_info"] = {
+                "timings_s": {k: float(v) for k, v in timings.items()},
+                "candidate_count": int(len(candidates)),
+                "reranked_count": int(min(int(rerank_top_k), len(candidates))),
+                "dense_top_k": int(dense_top_k),
+                "bm25_top_k": int(bm25_top_k),
+                "fused_top_k": int(fused_top_k),
+                "rrf_k": int(rrf_k),
+            }
+
+        return out
 
     def search_titles(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         """Search titles in the catalog (UI helper endpoint)."""
