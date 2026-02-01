@@ -114,7 +114,7 @@ curl "http://localhost:8000/movies/search?q=toy%20story&limit=10"
 
 ---
 
-## Assignment: Similar rating patterns (User-User Collaborative Filtering)
+# Similar rating patterns (User-User Collaborative Filtering)
 
 This repo also includes a **ratings-based** recommender that:
 
