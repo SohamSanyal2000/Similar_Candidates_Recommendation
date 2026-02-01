@@ -14,7 +14,16 @@ from src.pipelines.offline_build import run_offline_build
 from ..paths import get_repo_root
 from ..utils import setup_logging
 from .recommender import TwoStageMovieRecommender
-from .schemas import RecommendRequest, RecommendResponse
+from .schemas import (
+    RecommendRequest,
+    RecommendResponse,
+    SimilarUsersRequest,
+    SimilarUsersResponse,
+    UserCFRecommendRequest,
+    UserCFRecommendResponse,
+)
+
+from ..user_cf.recommender import UserUserCFRecommender
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +60,10 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting service with config=%s manifest=%s", config_path, manifest_path)
     app.state.recommender = TwoStageMovieRecommender(offline_manifest_path=manifest_path, config_path=config_path)
+
+    # Ratings-based user-user CF recommender (separate assignment module)
+    # Trains on-demand if artifacts are missing.
+    app.state.user_cf = UserUserCFRecommender(config_path=config_path, artifacts_dir=repo_root / "artifacts" / "user_cf")
     yield
 
 
@@ -61,6 +74,13 @@ def _recommender(app_: FastAPI) -> TwoStageMovieRecommender:
     rec = getattr(app_.state, "recommender", None)
     if rec is None:
         raise HTTPException(status_code=503, detail="Recommender not initialized")
+    return rec
+
+
+def _user_cf(app_: FastAPI) -> UserUserCFRecommender:
+    rec = getattr(app_.state, "user_cf", None)
+    if rec is None:
+        raise HTTPException(status_code=503, detail="UserCF recommender not initialized")
     return rec
 
 
@@ -84,3 +104,41 @@ def movies_search(q: str = Query(..., min_length=1), limit: int = Query(10, ge=1
     """Search for titles in the catalog (useful for UI testing)."""
     rec = _recommender(app)
     return {"query": q, "results": rec.search_titles(q, limit=int(limit))}
+
+
+@app.post("/user_cf/similar_users", response_model=SimilarUsersResponse)
+def user_cf_similar_users(req: SimilarUsersRequest) -> dict:
+    """Return users with similar rating patterns (based on learned user embeddings)."""
+    rec = _user_cf(app)
+    try:
+        sims = rec.similar_users(int(req.userId), top_n=int(req.top_n), min_common_rated=int(req.min_common_rated))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return {
+        "userId": int(req.userId),
+        "top_n": int(req.top_n),
+        "results": [s.__dict__ for s in sims],
+    }
+
+
+@app.post("/user_cf/recommend", response_model=UserCFRecommendResponse)
+def user_cf_recommend(req: UserCFRecommendRequest) -> dict:
+    """Recommend movies to a user based on movies liked by similar users."""
+    rec = _user_cf(app)
+    try:
+        recs = rec.recommend_movies(
+            int(req.userId),
+            k=int(req.k),
+            top_n_sim_users=int(req.top_n_sim_users),
+            min_common_rated=int(req.min_common_rated),
+            min_rating_liked=float(req.min_rating_liked),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return {
+        "userId": int(req.userId),
+        "k": int(req.k),
+        "results": [r.__dict__ for r in recs],
+    }
